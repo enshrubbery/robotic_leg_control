@@ -1,0 +1,21 @@
+# Build artifacts
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.list
+*.map
+*.bin
+*.hex
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+log_*.txt
+
+# IDE
+.vscode/

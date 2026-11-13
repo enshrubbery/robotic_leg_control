@@ -1,0 +1,27 @@
+# ninja log v7
+1	14	1792600766680057443	CMakeFiles/CubeMars_Position_Control.dir/Core/Startup/startup_stm32f446retx.s.obj	e9f6e522ca32f958
+1	46	1792600766679684590	CMakeFiles/CubeMars_Position_Control.dir/Core/Src/syscalls.c.obj	835c8cc265460c4f
+1	51	1792600766679969797	CMakeFiles/CubeMars_Position_Control.dir/Core/Src/uart_cmd.c.obj	9909f46fbd58e370
+1	62	1792600766679775221	CMakeFiles/CubeMars_Position_Control.dir/Core/Src/sysmem.c.obj	c56208fe61e734ca
+1	158	1792600766679882192	CMakeFiles/CubeMars_Position_Control.dir/Core/Src/system_stm32f4xx.c.obj	7feeb8095279d2af
+2	159	1792600766680753725	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_exti.c.obj	f18df354149b82dd
+2	169	1792600766680861738	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash.c.obj	59881058689ad7da
+14	190	1792600766692509576	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr.c.obj	30a1bca7b3ad0787
+2	199	1792600766680655770	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma_ex.c.obj	6de6d125dcaef784
+4	213	1792600766682205931	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ramfunc.c.obj	10708f8068268d03
+0	213	1792600766678005127	CMakeFiles/CubeMars_Position_Control.dir/Core/Src/uart_bridge.c.obj	2e63fb04d610b567
+1	219	1792600766679564954	CMakeFiles/CubeMars_Position_Control.dir/Core/Src/stm32f4xx_it.c.obj	1b80d4f2c16d333e
+47	220	1792600766725251603	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr_ex.c.obj	a624f7086834d035
+1	227	1792600766680144787	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c.obj	69f30921307bbba0
+2	230	1792600766680992444	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ex.c.obj	890b9666761bb3a3
+1	234	1792600766679005127	CMakeFiles/CubeMars_Position_Control.dir/Core/Src/stm32f4xx_hal_msp.c.obj	da08fb2b1dad1b4f
+2	244	1792600766680404226	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c.obj	71ab1be4d517a6de
+4	248	1792600766682775705	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c.obj	e293cce935d25566
+2	269	1792600766680278980	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_can.c.obj	a0d5bea3b919bebb
+2	270	1792600766680528801	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma.c.obj	ec044623ad7ab0f
+51	289	1792600766729005144	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c.obj	e55ae8fa922a9d99
+63	303	1792600766741490923	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c.obj	dd6306bce6f2c5ff
+160	333	1792600766838005179	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim_ex.c.obj	ad0729bbc30f1404
+170	354	1792600766848694118	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_uart.c.obj	504213093263f03f
+158	407	1792600766836445999	CMakeFiles/CubeMars_Position_Control.dir/Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c.obj	6d2e8cadfa6f190d
+407	438	1792600767085005258	CubeMars_Position_Control.elf	aa475d81d464854f
