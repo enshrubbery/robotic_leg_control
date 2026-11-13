@@ -1,3 +1,0 @@
-/home/ianshrub/HIER/NEW CODE/cubemarscontrol-vscode/CubeMars Position Control/build/SixMotor/CMakeFiles/CubeMars_Position_Control.dir
-/home/ianshrub/HIER/NEW CODE/cubemarscontrol-vscode/CubeMars Position Control/build/SixMotor/CMakeFiles/edit_cache.dir
-/home/ianshrub/HIER/NEW CODE/cubemarscontrol-vscode/CubeMars Position Control/build/SixMotor/CMakeFiles/rebuild_cache.dir

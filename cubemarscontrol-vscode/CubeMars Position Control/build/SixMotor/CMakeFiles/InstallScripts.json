@@ -1,7 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/home/ianshrub/HIER/NEW CODE/cubemarscontrol-vscode/CubeMars Position Control/build/SixMotor/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
