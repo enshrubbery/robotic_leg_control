@@ -6,7 +6,7 @@
   *
   * Controls up to 6 CubeMars motors (AK60, AK70/80, or AK40) via CAN bus.
   *   M1 Hip Pitch AK70-10 (CAN 10), M2 Hip Roll AK80-64 (CAN 11),
-  *   M3 Hip Yaw AK70-10 (CAN 12), M4 Knee AK60 (CAN 106),
+  *   M3 Hip Yaw AK70-10 (CAN 2), M4 Knee AK60 (CAN 106),
   *   M5 Foot Diff 1 AK60 (CAN 104), M6 Foot Diff 2 AK60 (CAN 105).
   *
   * STM32-side outer PID loop feeds torque (tff) into the MIT CAN frame.

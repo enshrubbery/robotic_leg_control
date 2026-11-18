@@ -62,13 +62,13 @@ void uart_cmd_init(void)
     motors[1].pid_active = 0;
     motors[1].fb_only = 0;
 
-    // M3: Hip Yaw, AK70-10, CAN ID 12 (needs enable)
+    // M3: Hip Yaw, AK70-10, CAN ID 2 (needs enable)
     motors[2].pos = 0.0f;
     motors[2].vel = 0.0f;
     motors[2].kp  = 5.0f;    // inner MIT spring
     motors[2].kd  = 0.3f;    // inner MIT damper
     motors[2].tff = 0.0f;
-    motors[2].can_id = 12;
+    motors[2].can_id = 2;
     motors[2].type = MOTOR_TYPE_AK70;
     motors[2].enable_pending = 0;
     motors[2].enabled = 0;

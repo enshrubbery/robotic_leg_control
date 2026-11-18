@@ -42,7 +42,7 @@ RAD2DEG = 180.0 / math.pi
 MOTORS = [
     (1, "HipPitch", "CAN 10"),
     (2, "HipRoll", "CAN 11"),
-    (3, "HipYaw", "CAN 12"),
+    (3, "HipYaw", "CAN 2"),
     (4, "Knee", "CAN 106"),
     (5, "FootDiff1", "CAN 104"),
     (6, "FootDiff2", "CAN 105"),

@@ -480,7 +480,7 @@ def main():
 
     port = link.ser.port
     print(f"Connected on {port} @ {args.baud}. Type 'h' for help, 'q' to quit.")
-    print("Motors: M1 HipPitch(10) M2 HipRoll(11) M3 HipYaw(12) "
+    print("Motors: M1 HipPitch(10) M2 HipRoll(11) M3 HipYaw(2) "
           "M4 Knee(106) M5 FootDiff1(104) M6 FootDiff2(105)")
     try:
         while True:
