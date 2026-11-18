@@ -37,6 +37,7 @@ typedef struct {
     uint8_t fb_only;     // 1 = poll state via 0xFC, no torque (set via R command)
 } MotorState;
 
+extern volatile uint8_t uart_cmd_diag_requested;
 void         uart_cmd_init(void);
 void         uart_cmd_feed(uint8_t byte);
 MotorState  *uart_cmd_motor(uint8_t idx);

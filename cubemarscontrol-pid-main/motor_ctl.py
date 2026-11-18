@@ -20,6 +20,7 @@ Command syntax (motor number first):
     <n> r        passive feedback only (disable control)
     <n> o        set current position as the new zero (origin)
     <n> hold     re-hold motor n at its current position
+    diag         show cumulative M3 CAN counters since controller reset
     s            show latest state of all motors
     x            EMERGENCY STOP (makes all motors go limp, 0X)
     f            toggle live feedback printing on/off
@@ -139,7 +140,7 @@ class MotorLink:
                         if cid not in self.unknown_ids:
                             self.unknown_ids[cid] = {'ide': ide, 'count': 0}
                         self.unknown_ids[cid]['count'] += 1
-                if self.print_fb:
+                if self.print_fb or line.startswith("[M3 diag]"):
                     print(line)
                 if self._scan_buf is not None:
                     self._scan_buf.append(line)
@@ -384,6 +385,9 @@ def handle(link, raw):
         return False
     if head in ("x", "stop", "estop"):
         link.estop()
+        return True
+    if head == "diag":
+        link.send("0Q\n")
         return True
     if head in ("s", "status"):
         link.status()

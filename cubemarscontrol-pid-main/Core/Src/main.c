@@ -86,7 +86,11 @@ CAN_TxHeaderTypeDef txHeader;
 CAN_RxHeaderTypeDef rxHeader;
 uint8_t  txData[8];
 uint8_t  rxData[8];
-uint32_t txMailbox;
+static uint32_t m3_attempted, m3_completed;
+static uint32_t m3_timeouts, m3_arbitration_lost, m3_tx_errors, m3_other;
+static uint32_t bus_mailbox_timeouts;
+static volatile uint32_t m3_received;
+static uint8_t m3_mailboxes;  // Main loop owns TX mailboxes and completion flags.
 
 uint8_t uart_rx_byte;
 
@@ -122,7 +126,7 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static unsigned int float_to_uint(float x, float x_min, float x_max, unsigned int bits);
 static float        uint_to_float(int x_int, float x_min, float x_max, int bits);
-static void         send_can_frame(void);
+static void         send_can_frame(MotorState *m);
 static void         send_ak60_cmd(MotorState *m);
 static void         send_ak70_cmd(MotorState *m);
 static void         send_ak40_cmd(MotorState *m);
@@ -153,13 +157,52 @@ static float uint_to_float(int x_int, float x_min, float x_max, int bits)
     return ((float)x_int) * span / ((float)((1 << bits) - 1)) + x_min;
 }
 
-static void send_can_frame(void)
+static void collect_m3_completions(uint32_t status)
 {
-    uint32_t timeout = HAL_GetTick() + 5;
-    while (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0) {
-        if (HAL_GetTick() > timeout) return;
+    for (unsigned slot = 0; slot < 3; ++slot) {
+        unsigned shift = 8U * slot;
+        if ((m3_mailboxes & (1U << slot)) && (status & (CAN_TSR_RQCP0 << shift))) {
+            if (status & (CAN_TSR_TXOK0 << shift)) ++m3_completed;
+            else if (status & (CAN_TSR_ALST0 << shift)) ++m3_arbitration_lost;
+            else if (status & (CAN_TSR_TERR0 << shift)) ++m3_tx_errors;
+            else ++m3_other;
+            m3_mailboxes &= ~(1U << slot);
+        }
     }
-    HAL_CAN_AddTxMessage(&hcan1, &txHeader, txData, &txMailbox);
+}
+
+static void send_can_frame(MotorState *m)
+{
+    const int is_m3 = m == uart_cmd_motor(2);
+    if (is_m3) ++m3_attempted;
+    uint32_t start = HAL_GetTick(), status;
+    do {
+        status = hcan1.Instance->TSR;
+        if (status & (CAN_TSR_TME0 | CAN_TSR_TME1 | CAN_TSR_TME2)) break;
+        if (HAL_GetTick() - start > 5U) {
+            ++bus_mailbox_timeouts;
+            if (is_m3) ++m3_timeouts;
+            return;
+        }
+    } while (1);
+
+    // Select from the same TSR snapshot as the empty check. Account for
+    // its previous frame before reusing this mailbox for another motor.
+    unsigned slot = (status & CAN_TSR_CODE) >> CAN_TSR_CODE_Pos;
+    collect_m3_completions(status);
+    hcan1.Instance->TSR = CAN_TSR_RQCP0 << (8U * slot);
+    CAN_TxMailBox_TypeDef *box = &hcan1.Instance->sTxMailBox[slot];
+    uint32_t id = txHeader.IDE == CAN_ID_STD ? txHeader.StdId << 21
+                                             : (txHeader.ExtId << 3) | CAN_ID_EXT;
+    uint32_t low, high;
+    memcpy(&low, txData, 4);
+    memcpy(&high, txData + 4, 4);
+    box->TIR = id | txHeader.RTR;
+    box->TDTR = txHeader.DLC;
+    box->TDLR = low;
+    box->TDHR = high;
+    if (is_m3) m3_mailboxes |= 1U << slot;
+    box->TIR = id | txHeader.RTR | CAN_TI0R_TXRQ;
 }
 
 // AK60: extended CAN ID, KP/KD/Pos/Vel/Torque byte order
@@ -186,7 +229,7 @@ static void send_ak60_cmd(MotorState *m)
     txHeader.RTR                = CAN_RTR_DATA;
     txHeader.DLC                = 8;
     txHeader.TransmitGlobalTime = DISABLE;
-    send_can_frame();
+    send_can_frame(m);
 }
 
 // AK70/80: standard CAN ID, Pos/Vel/KP/KD/Torque byte order
@@ -213,7 +256,7 @@ static void send_ak70_cmd(MotorState *m)
     txHeader.RTR                = CAN_RTR_DATA;
     txHeader.DLC                = 8;
     txHeader.TransmitGlobalTime = DISABLE;
-    send_can_frame();
+    send_can_frame(m);
 }
 
 // AK40: standard CAN ID, same byte order as AK70 but different limits
@@ -240,7 +283,7 @@ static void send_ak40_cmd(MotorState *m)
     txHeader.RTR                = CAN_RTR_DATA;
     txHeader.DLC                = 8;
     txHeader.TransmitGlobalTime = DISABLE;
-    send_can_frame();
+    send_can_frame(m);
 }
 
 // AK70/80/AK40 enter MIT mode: 0xFF x7 + 0xFC
@@ -255,7 +298,7 @@ static void send_ak70_enable(MotorState *m)
     txHeader.RTR                = CAN_RTR_DATA;
     txHeader.DLC                = 8;
     txHeader.TransmitGlobalTime = DISABLE;
-    send_can_frame();
+    send_can_frame(m);
 }
 
 // AK60 enter MIT motor mode: same magic bytes as AK70 but on extended CAN frame
@@ -270,7 +313,7 @@ static void send_ak60_enable(MotorState *m)
     txHeader.RTR                = CAN_RTR_DATA;
     txHeader.DLC                = 8;
     txHeader.TransmitGlobalTime = DISABLE;
-    send_can_frame();
+    send_can_frame(m);
 }
 
 // Send a zero-gain MIT frame to any motor type.
@@ -305,7 +348,7 @@ static void send_ak60_set_origin(MotorState *m)
     txHeader.RTR                = CAN_RTR_DATA;
     txHeader.DLC                = 1;
     txHeader.TransmitGlobalTime = DISABLE;
-    send_can_frame();
+    send_can_frame(m);
 }
 
 // AK70/80/AK40 set origin: 0xFF x7 + 0xFE
@@ -326,7 +369,7 @@ static void send_ak70_set_origin(MotorState *m)
     txHeader.RTR                = CAN_RTR_DATA;
     txHeader.DLC                = 8;
     txHeader.TransmitGlobalTime = DISABLE;
-    send_can_frame();
+    send_can_frame(m);
 }
 
 // AK60 feedback: servo-mode format (writes to ring buffer, not UART directly)
@@ -422,6 +465,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     for (uint8_t i = 0; i < NUM_MOTORS; i++) {
         MotorState *m = uart_cmd_motor(i);
         if (m->can_id == rx_id) {
+            if (i == 2) ++m3_received;
             if (m->type == MOTOR_TYPE_AK60)
                 unpack_ak60_reply(i);
             else if (m->type == MOTOR_TYPE_AK40)
@@ -773,6 +817,18 @@ int main(void)
             HAL_Delay(2);
         }
 
+        if (uart_cmd_diag_requested) {
+            uart_cmd_diag_requested = 0;
+            collect_m3_completions(hcan1.Instance->TSR);
+            char line[224];
+            int len = snprintf(line, sizeof(line),
+                "\r\n[M3 diag] ms=%lu attempted=%lu completed=%lu received=%lu timeouts=%lu arb_lost=%lu tx_errors=%lu other=%lu bus_timeouts=%lu\r\n",
+                (unsigned long)HAL_GetTick(), (unsigned long)m3_attempted,
+                (unsigned long)m3_completed, (unsigned long)m3_received,
+                (unsigned long)m3_timeouts, (unsigned long)m3_arbitration_lost,
+                (unsigned long)m3_tx_errors, (unsigned long)m3_other, (unsigned long)bus_mailbox_timeouts);
+            HAL_UART_Transmit(&huart2, (uint8_t *)line, len, 20);
+        }
         // Drain feedback buffer over UART (non-ISR context)
         while (fb_tail != fb_head) {
             uint8_t c = (uint8_t)fb_buf[fb_tail];
@@ -829,7 +885,7 @@ static void MX_CAN1_Init(void)
     hcan1.Init.TimeTriggeredMode    = DISABLE;
     hcan1.Init.AutoBusOff           = ENABLE;
     hcan1.Init.AutoWakeUp           = DISABLE;
-    hcan1.Init.AutoRetransmission   = DISABLE;
+    hcan1.Init.AutoRetransmission   = ENABLE;
     hcan1.Init.ReceiveFifoLocked    = DISABLE;
     hcan1.Init.TransmitFifoPriority = DISABLE;
     if (HAL_CAN_Init(&hcan1) != HAL_OK) Error_Handler();

@@ -152,6 +152,8 @@ MotorState *uart_cmd_motor(uint8_t motor_idx)
     return &motors[motor_idx];
 }
 
+volatile uint8_t uart_cmd_diag_requested;
+
 static void parse_cmd(void)
 {
     if (idx < 2) return;
@@ -159,6 +161,7 @@ static void parse_cmd(void)
 
     // Global commands: "0X" emergency stop, "0H" host heartbeat.
     if (buf[0] == '0') {
+        if (buf[1] == 'Q') uart_cmd_diag_requested = 1;
         if (buf[1] == 'X' || buf[1] == 'x')
             e_stop_pending = 1;
         if (buf[1] == 'L' || buf[1] == 'l') {
