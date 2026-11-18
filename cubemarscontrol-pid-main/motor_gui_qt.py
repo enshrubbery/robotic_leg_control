@@ -40,12 +40,12 @@ from motor_ctl import MotorLink, autodetect_ports
 RAD2DEG = 180.0 / math.pi
 
 MOTORS = [
-    (1, "HipPitch", "CAN 10"),
-    (2, "HipRoll", "CAN 11"),
-    (3, "HipYaw", "CAN 2"),
-    (4, "Knee", "CAN 106"),
-    (5, "FootDiff1", "CAN 104"),
-    (6, "FootDiff2", "CAN 105"),
+    (1, "HipPitch", "CAN 1"),
+    (2, "HipRoll", "CAN 2"),
+    (3, "HipYaw", "CAN 3"),
+    (4, "Knee", "CAN 4"),
+    (5, "FootDiff1", "CAN 5"),
+    (6, "FootDiff2", "CAN 6"),
 ]
 
 
@@ -60,7 +60,8 @@ class EmittingStream(QObject):
         self._buf = ""
 
     def write(self, text):
-        self._real.write(text)
+        if self._real is not None:
+            self._real.write(text)
         self._buf += text
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)
@@ -68,7 +69,8 @@ class EmittingStream(QObject):
                 self.text_written.emit(line)
 
     def flush(self):
-        self._real.flush()
+        if self._real is not None:
+            self._real.flush()
 
 
 class CommandWorker(QThread):

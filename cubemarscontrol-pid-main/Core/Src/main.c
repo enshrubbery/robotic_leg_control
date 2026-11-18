@@ -5,9 +5,9 @@
   * @brief          : Robot leg UART remote control (6 motors) — PID version
   *
   * Controls up to 6 CubeMars motors (AK60, AK70/80, or AK40) via CAN bus.
-  *   M1 Hip Pitch AK70-10 (CAN 10), M2 Hip Roll AK80-64 (CAN 11),
-  *   M3 Hip Yaw AK70-10 (CAN 2), M4 Knee AK60 (CAN 106),
-  *   M5 Foot Diff 1 AK60 (CAN 104), M6 Foot Diff 2 AK60 (CAN 105).
+  *   M1 Hip Pitch AK70-10 (CAN 1), M2 Hip Roll AK80-64 (CAN 2),
+  *   M3 Hip Yaw AK70-10 (CAN 3), M4 Knee AK60 (CAN 4),
+  *   M5 Foot Diff 1 AK60 (CAN 5), M6 Foot Diff 2 AK60 (CAN 6).
   *
   * STM32-side outer PID loop feeds torque (tff) into the MIT CAN frame.
   * Inner MIT kp/kd are small fixed values for high-frequency stability only.

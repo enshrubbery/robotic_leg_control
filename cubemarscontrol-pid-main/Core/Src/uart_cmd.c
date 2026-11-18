@@ -22,13 +22,13 @@ void uart_cmd_init(void)
     memset(motors, 0, sizeof(motors));
     last_activity_tick = HAL_GetTick();
 
-    // M1: Hip Pitch, AK70-10, CAN ID 10 (needs enable)
+    // M1: Hip Pitch, AK70-10, CAN ID 1 (needs enable)
     motors[0].pos = 0.0f;
     motors[0].vel = 0.0f;
     motors[0].kp  = 5.0f;    // inner MIT spring
     motors[0].kd  = 0.3f;    // inner MIT damper
     motors[0].tff = 0.0f;
-    motors[0].can_id = 10;
+    motors[0].can_id = 1;
     motors[0].type = MOTOR_TYPE_AK70;
     motors[0].enable_pending = 0;
     motors[0].enabled = 0;
@@ -42,13 +42,13 @@ void uart_cmd_init(void)
     motors[0].pid_active = 0;
     motors[0].fb_only = 0;
 
-    // M2: Hip Roll, AK80-64, CAN ID 11 (AK80 shares AK70 limits)
+    // M2: Hip Roll, AK80-64, CAN ID 2 (AK80 shares AK70 limits)
     motors[1].pos = 0.0f;
     motors[1].vel = 0.0f;
     motors[1].kp  = 5.0f;    // inner MIT spring
     motors[1].kd  = 0.3f;    // inner MIT damper
     motors[1].tff = 0.0f;
-    motors[1].can_id = 11;
+    motors[1].can_id = 2;
     motors[1].type = MOTOR_TYPE_AK70;
     motors[1].enable_pending = 0;
     motors[1].enabled = 0;
@@ -62,13 +62,13 @@ void uart_cmd_init(void)
     motors[1].pid_active = 0;
     motors[1].fb_only = 0;
 
-    // M3: Hip Yaw, AK70-10, CAN ID 2 (needs enable)
+    // M3: Hip Yaw, AK70-10, CAN ID 3 (needs enable)
     motors[2].pos = 0.0f;
     motors[2].vel = 0.0f;
     motors[2].kp  = 5.0f;    // inner MIT spring
     motors[2].kd  = 0.3f;    // inner MIT damper
     motors[2].tff = 0.0f;
-    motors[2].can_id = 2;
+    motors[2].can_id = 3;
     motors[2].type = MOTOR_TYPE_AK70;
     motors[2].enable_pending = 0;
     motors[2].enabled = 0;
@@ -82,13 +82,13 @@ void uart_cmd_init(void)
     motors[2].pid_active = 0;
     motors[2].fb_only = 0;
 
-    // M4: Knee, AK60, CAN ID 106 (needs enable)
+    // M4: Knee, AK60, CAN ID 4 (needs enable)
     motors[3].pos = 0.0f;
     motors[3].vel = 0.0f;
     motors[3].kp  = 3.0f;    // inner MIT spring
     motors[3].kd  = 0.2f;    // inner MIT damper
     motors[3].tff = 0.0f;
-    motors[3].can_id = 106;
+    motors[3].can_id = 4;
     motors[3].type = MOTOR_TYPE_AK60;
     motors[3].enable_pending = 0;
     motors[3].enabled = 0;
@@ -102,13 +102,13 @@ void uart_cmd_init(void)
     motors[3].pid_active = 0;
     motors[3].fb_only = 0;
 
-    // M5: Foot Diff 1, AK60, CAN ID 104 (needs enable)
+    // M5: Foot Diff 1, AK60, CAN ID 5 (needs enable)
     motors[4].pos = 0.0f;
     motors[4].vel = 0.0f;
     motors[4].kp  = 3.0f;    // inner MIT spring
     motors[4].kd  = 0.2f;    // inner MIT damper
     motors[4].tff = 0.0f;
-    motors[4].can_id = 104;
+    motors[4].can_id = 5;
     motors[4].type = MOTOR_TYPE_AK60;
     motors[4].enable_pending = 0;
     motors[4].enabled = 0;
@@ -122,13 +122,13 @@ void uart_cmd_init(void)
     motors[4].pid_active = 0;
     motors[4].fb_only = 0;
 
-    // M6: Foot Diff 2, AK60, CAN ID 105 (needs enable)
+    // M6: Foot Diff 2, AK60, CAN ID 6 (needs enable)
     motors[5].pos = 0.0f;
     motors[5].vel = 0.0f;
     motors[5].kp  = 3.0f;    // inner MIT spring
     motors[5].kd  = 0.2f;    // inner MIT damper
     motors[5].tff = 0.0f;
-    motors[5].can_id = 105;
+    motors[5].can_id = 6;
     motors[5].type = MOTOR_TYPE_AK60;
     motors[5].enable_pending = 0;
     motors[5].enabled = 0;
