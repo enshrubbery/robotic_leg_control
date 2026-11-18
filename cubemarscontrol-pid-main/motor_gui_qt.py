@@ -25,19 +25,28 @@ Usage:
 
 import math
 import queue
+import re
 import sys
 import threading
+import time
 
 from PyQt6.QtCore import Qt, QObject, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox,
-    QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLayout, QPlainTextEdit, QPushButton, QScrollArea,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from motor_ctl import MotorLink, autodetect_ports
 
 RAD2DEG = 180.0 / math.pi
+PAIR_RAMP_SECONDS = 30
+PAIR_SETTLE_SECONDS = 10
+M1_ASSIST_DEADBAND_DEG = 1.0
+M1_ASSIST_NM_PER_DEG = 0.10
+M1_ASSIST_MAX_NM = 0.35
+M1_ASSIST_RISE_NM_S = 0.15
 
 MOTORS = [
     (1, "HipPitch", "CAN 1"),
@@ -98,6 +107,12 @@ class CommandWorker(QThread):
             except Exception as e:  # keep the worker alive on command errors
                 print(f"  [gui] command error: {e}")
 
+            finally:
+                self._q.task_done()
+
+    def busy(self):
+        return bool(self._q.unfinished_tasks)
+
     def stop(self):
         self._stop = True
         self._q.put(None)
@@ -124,8 +139,18 @@ class MotorPanel(QGroupBox):
         self.pos_lbl.setFont(f)
         self.pos_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.pos_lbl.setFrameShape(QFrame.Shape.StyledPanel)
-        self.pos_lbl.setMinimumHeight(40)
-        root.addWidget(self.pos_lbl)
+        self.pos_lbl.setMargin(3)
+        self.pos_lbl.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        self.effort_lbl = QLabel()
+        self.effort_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.effort_lbl.setFrameShape(QFrame.Shape.StyledPanel)
+        self.effort_lbl.setFont(f)
+        self.effort_lbl.setMargin(3)
+        self.effort_lbl.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        readings = QHBoxLayout()
+        readings.addWidget(self.pos_lbl, 1)
+        readings.addWidget(self.effort_lbl, 1)
+        root.addLayout(readings)
 
         self.state_lbl = QLabel("passive")
         self.state_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -169,7 +194,7 @@ class MotorPanel(QGroupBox):
         self.jog_minus.released.connect(self._stop_jog)
         self.jog_plus.pressed.connect(lambda: self._start_jog(+1))
         self.jog_plus.released.connect(self._stop_jog)
-        self._jog_timer.timeout.connect(lambda: self._jog(self._jog_sign))
+        self._jog_timer.timeout.connect(self._repeat_jog)
         jog_row.addWidget(self.jog_minus)
         jog_row.addWidget(self.jog_plus)
         root.addLayout(jog_row)
@@ -194,6 +219,10 @@ class MotorPanel(QGroupBox):
         self._jog(sign)          # fire immediately on press
         self._jog_timer.start()  # then repeat while held
 
+    def _repeat_jog(self):
+        if not self.gui.worker.busy():
+            self._jog(self._jog_sign)
+
     def _stop_jog(self):
         self._jog_timer.stop()
         self._jog_sign = 0
@@ -209,7 +238,12 @@ class MotorPanel(QGroupBox):
         for b in self._controls:
             b.setEnabled(connected)
 
-    def update_readout(self, pos_rad, enabled):
+    def update_readout(self, pos_rad, enabled, line=""):
+        match = re.search(r"(?:^|\s)(tau|I)=([+-]?\d+(?:\.\d+)?)(?=\s|$)", line)
+        torque = match[1] == "tau" if match else self.idx <= 3
+        label, unit = ("Torque", "N·m") if torque else ("Current", "A")
+        value = f"{float(match[2]):+.2f}" if match else "—"
+        self.effort_lbl.setText(f"{label}\n{value} {unit}")
         if pos_rad is None:
             self.pos_lbl.setText("—.———— rad")
         else:
@@ -227,6 +261,7 @@ class MotorGUI(QWidget):
         super().__init__()
         self.setWindowTitle("CubeMars 6-Motor Control")
         self.link = None
+        self.command_generation = 0
         self.worker = CommandWorker()
         self.worker.start()
 
@@ -273,7 +308,13 @@ class MotorGUI(QWidget):
         self.speed_btn = QPushButton("Set")
         self.speed_btn.clicked.connect(self._set_speed)
         speed_row.addWidget(self.speed_btn)
-        speed_row.addStretch(1)
+        self.pair_move = None
+        self.pair_btn = QPushButton(f"M1 + M4: move by −90° ({PAIR_RAMP_SECONDS} s)")
+        self.pair_btn.clicked.connect(self.start_pair_move)
+        speed_row.addWidget(self.pair_btn)
+        self.motion_status = QLabel()
+        self.motion_status.setWordWrap(True)
+        speed_row.addWidget(self.motion_status, 1)
         root.addLayout(speed_row)
 
         # --- unknown CAN IDs ---
@@ -286,20 +327,27 @@ class MotorGUI(QWidget):
         ub_layout.addStretch(1)
         root.addWidget(self.unknown_box)
 
-        # --- motor grid (2 rows x 3) ---
-        grid = QGridLayout()
+        # Allow the grid to scroll when the screen cannot fit both rows.
+        motor_scroll = QScrollArea()
+        motor_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        motor_scroll.setWidgetResizable(True)
+        motor_grid = QWidget()
+        grid = QGridLayout(motor_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.panels = {}
         for i, (idx, name, meta) in enumerate(MOTORS):
             panel = MotorPanel(idx, name, meta, self)
             self.panels[idx] = panel
             grid.addWidget(panel, i // 3, i % 3)
-        root.addLayout(grid)
+        motor_scroll.setWidget(motor_grid)
+        root.addWidget(motor_scroll, 1)
 
         # --- log ---
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(500)
-        self.log.setFixedHeight(140)
+        self.log.setFixedHeight(5 * self.log.fontMetrics().lineSpacing() + 12)
         self.log.setStyleSheet("font-family: monospace; font-size: 11px;")
         root.addWidget(self.log)
 
@@ -322,7 +370,11 @@ class MotorGUI(QWidget):
         if self.link is None:
             print("  [gui] not connected")
             return
-        self.worker.submit(fn)
+        generation = self.command_generation
+        def run_if_current():
+            if self.command_generation == generation:
+                fn()
+        self.worker.submit(run_if_current)
 
     def refresh_ports(self):
         self.port_combo.clear()
@@ -355,6 +407,9 @@ class MotorGUI(QWidget):
         print(f"  [gui] connected on {self.link.ser.port}")
 
     def disconnect(self):
+        self.command_generation += 1
+        self.motion_status.clear()
+        self.pair_move = None
         self.timer.stop()
         link, self.link = self.link, None
         if link is not None:
@@ -363,6 +418,85 @@ class MotorGUI(QWidget):
         self.connect_btn.setText("Connect")
         self.set_connected(False)
         print("  [gui] disconnected")
+
+    def start_pair_move(self):
+        motors = (1, 4)
+        if self.link is None or self.pair_move is not None or self.worker.busy():
+            self.motion_status.setText("Wait for the current command, then click again.")
+            return
+        if not all(n in self.link.enabled for n in motors):
+            self.motion_status.setText("Enable M1 and M4, then click the paired move.")
+            return
+        start = self.link.recent_positions(motors)
+        if start is None:
+            self.motion_status.setText("Waiting for fresh M1 and M4 positions. Retry when both update.")
+            return
+        now = time.monotonic()
+        self.pair_move = (now, start)
+        self.assist_updated = now
+        self.m1_assist_nm = 0.0
+        self.pair_btn.setEnabled(False)
+        self.speed_btn.setEnabled(False)
+        self.motion_status.setText("M1 + M4 ramp starting")
+        for n in motors:
+            panel = self.panels[n]
+            panel._stop_jog()
+            panel.set_connected(False)
+        print(f"  Starting {PAIR_RAMP_SECONDS}s relative -90 deg move from "
+              f"M1={math.degrees(start[1]):.1f}°, M4={math.degrees(start[4]):.1f}°. "
+              f"M1 torque assist limited to {M1_ASSIST_MAX_NM:.2f} N·m.")
+
+    def advance_pair_move(self):
+        began, start = self.pair_move
+        now = time.monotonic()
+        elapsed = now - began
+        u = min(elapsed / PAIR_RAMP_SECONDS, 1.0)
+        # Quintic interpolation gives zero velocity and acceleration at both ends.
+        offset = -math.pi / 2 * u**3 * (10 - 15*u + 6*u*u)
+        target = {n: p + offset for n, p in start.items()}
+        samples = self.link.recent_samples(start)
+        try:
+            if samples is None or not all(n in self.link.enabled for n in start):
+                raise RuntimeError("enable state or fresh encoder feedback lost")
+            actual = {n: sample[0] for n, sample in samples.items()}
+            worst = max(start, key=lambda n: abs(target[n] - actual[n]))
+            error = abs(target[worst] - actual[worst])
+            if error > math.radians(5) or elapsed > PAIR_RAMP_SECONDS + PAIR_SETTLE_SECONDS:
+                reason = (f"M{worst} tracking error {math.degrees(error):.1f}° exceeds 5°"
+                          if error > math.radians(5) else "final settling timed out")
+                for n in start:
+                    print(f"  M{n} at {elapsed:.1f}s: encoder {math.degrees(actual[n]):+.2f}°, "
+                          f"last command {math.degrees(self.link.cmd_pos.get(n, start[n])):+.2f}°, "
+                          f"ramp target {math.degrees(target[n]):+.2f}°")
+                    _, received, line = samples[n]
+                    age_ms = (time.monotonic() - received) * 1000
+                    print(f"    Feedback received {age_ms:.0f} ms ago: {line}")
+                print(f"  Last M1 torque assist command: {-self.m1_assist_nm:+.3f} N·m")
+                raise RuntimeError(reason)
+            # This trajectory travels in the negative direction. Positive lag
+            # means M1 has not yet reached the requested encoder position.
+            lag_deg = math.degrees(actual[1] - target[1])
+            demand_nm = max(0.0, lag_deg - M1_ASSIST_DEADBAND_DEG) * M1_ASSIST_NM_PER_DEG
+            dt = min(now - self.assist_updated, self.timer.interval() / 1000.0)
+            self.m1_assist_nm = min(demand_nm, M1_ASSIST_MAX_NM,
+                                    self.m1_assist_nm + dt * M1_ASSIST_RISE_NM_S)
+            self.assist_updated = now
+            torque = -self.m1_assist_nm if self.m1_assist_nm else 0.0
+            self.link.send(f"1V0\n1T{torque:.4f}\n1P{target[1]:.5f}\n"
+                           f"4V0\n4T0\n4P{target[4]:.5f}\n")
+            self.motion_status.setText(
+                f"M1 + M4 ramp: {min(PAIR_RAMP_SECONDS, int(elapsed))} / {PAIR_RAMP_SECONDS} s "
+                f"| M1 assist {torque:+.2f} N·m")
+            self.link.cmd_pos.update(target)
+            if u == 1 and error <= math.radians(1):
+                self.pair_move = None
+                self.set_connected(True)
+                self.motion_status.setText("M1 + M4 complete")
+                print("  Paired move complete. Holding final positions.")
+        except Exception as exc:
+            print(f"  Paired move stopped: {exc}")
+            self.estop()
+            self.motion_status.setText(f"E-STOP: {exc}. Click Enable to rearm.")
 
     def _set_speed(self):
         if self.link is None:
@@ -374,21 +508,46 @@ class MotorGUI(QWidget):
     def estop(self):
         # Call directly (not via the worker queue) so it fires immediately even
         # if a slow enable/move is in flight. MotorLink.send is lock-guarded.
+        self.pair_move = None
         if self.link is not None:
+            self.command_generation += 1
+            for panel in self.panels.values():
+                panel._stop_jog()
             self.link.estop()
+            self.set_connected(True)
+            self.motion_status.setText("E-STOP active. Click Enable to rearm.")
+            self.poll_state()
 
     def set_connected(self, connected):
+        self.pair_btn.setEnabled(connected)
         self.estop_btn.setEnabled(connected)
         self.speed_btn.setEnabled(connected)
         for p in self.panels.values():
             p.set_connected(connected)
+            if not connected:
+                p.update_readout(None, False)
 
     def poll_state(self):
         if self.link is None:
             return
+        if self.pair_move is not None:
+            self.advance_pair_move()
+        if not self.link._estopped and self.motion_status.text().startswith("E-STOP"):
+            self.motion_status.clear()
         enabled = set(self.link.enabled)
         for idx, panel in self.panels.items():
-            panel.update_readout(self.link.get_pos(idx), idx in enabled)
+            jog_allowed = not self.link._estopped and (self.pair_move is None or idx not in (1, 4))
+            state = self.link.drive_state.get(idx)
+            stopped = state and state[1] != "none"
+            if stopped:
+                panel._stop_jog()
+                jog_allowed = False
+            panel.jog_plus.setEnabled(jog_allowed)
+            panel.jog_minus.setEnabled(jog_allowed)
+            position, line = self.link.get_readout(idx)
+            panel.update_readout(position, idx in enabled, line)
+            if stopped:
+                panel.state_lbl.setText(f"Stopped: {state[1]} | Enable to rearm")
         unknown = self.link.get_unknown_ids()
         if unknown:
             ide_str = {0: "STD", 4: "EXT"}

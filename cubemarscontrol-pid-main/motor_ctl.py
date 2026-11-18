@@ -79,6 +79,8 @@ class MotorLink:
 
         self.unknown_ids = {}  # can_id (int) -> {'ide': int, 'count': int}
         self.pos_rad = {}      # motor -> latest *unwrapped* position in radians
+        self.feedback_time = {}
+        self.drive_state = {}  # motor -> (controller enabled, stop reason, sample time)
         self.last_line = {}    # motor -> latest raw feedback line
         self._fb_prev = {}     # motor -> previous wrapped feedback value (rad), for unwrapping
         self.enabled = set()   # motors we've enabled this session
@@ -130,7 +132,15 @@ class MotorLink:
                             raw += 2 * math.pi
                             delta += 2 * math.pi
                     self._fb_prev[n] = raw
+                    state = re.search(r" en=([01]) stop=(\w+)", line)
                     with self._lock:
+                        stamp = time.monotonic()
+                        if state:
+                            active, reason = state[1] == "1", state[2]
+                            self.drive_state[n] = (active, reason, stamp)
+                            if not active:
+                                self.enabled.discard(n)
+                        self.feedback_time[n] = stamp
                         self.pos_rad[n] = raw
                         self.last_line[n] = line
                 u = UNKNOWN_RE.search(line)
@@ -179,6 +189,25 @@ class MotorLink:
         with self._lock:
             return self.pos_rad.get(n)
 
+    def get_readout(self, n, max_age=0.5):
+        """Return a fresh encoder position and its matching raw feedback line."""
+        with self._lock:
+            if n not in self.pos_rad or time.monotonic() - self.feedback_time[n] > max_age:
+                return None, ""
+            return self.pos_rad[n], self.last_line[n]
+
+    def recent_samples(self, motors, max_age=0.5):
+        with self._lock:
+            now = time.monotonic()
+            if any(n not in self.feedback_time or now - self.feedback_time[n] > max_age
+                   for n in motors):
+                return None
+            return {n: (self.pos_rad[n], self.feedback_time[n], self.last_line[n]) for n in motors}
+
+    def recent_positions(self, motors, max_age=0.5):
+        samples = self.recent_samples(motors, max_age)
+        return None if samples is None else {n: sample[0] for n, sample in samples.items()}
+
     def get_unknown_ids(self):
         """Return a copy of the unknown CAN ID table: {can_id: {'ide': int, 'count': int}}."""
         with self._lock:
@@ -198,32 +227,46 @@ class MotorLink:
         return None
 
     def ensure_enabled(self, n):
-        if n in self.enabled:
-            return True
         if self._estopped:
             print(f"  M{n}: e-stop active, cannot enable")
             return False
-        print(f"  M{n} not enabled -- enabling (soft-start ~{ENABLE_SETTLE_S:.1f}s)...")
-        self.send(f"{n}E\n")
-        time.sleep(ENABLE_SETTLE_S)
-        self.enabled.add(n)
-        return True
+        with self._lock:
+            state = self.drive_state.get(n)
+            if state and state[1] != "none":
+                print(f"  M{n} stopped ({state[1]}). Click Enable to rearm.")
+                return False
+            if n in self.enabled:
+                return True
+        return self._enable_and_wait(n)
 
-    # ---- high-level commands ----------------------------------------------
     def enable(self, n):
-        self._estopped = False   # clear estop so heartbeat resumes normal keepalive
+        self._estopped = False
+        return self._enable_and_wait(n)
+
+    def _enable_and_wait(self, n):
+        began = time.monotonic()
         self.send(f"{n}E\n")
         time.sleep(ENABLE_SETTLE_S)
-        self.enabled.add(n)
-        # request status to provoke feedback
-        self.send(f"{n}s\n")
-        time.sleep(0.5)
-        # tiny move to elicit position feedback
-        self.send(f"{n}p0.001\n")
-        time.sleep(0.5)
-        # seed the software jog setpoint from the motor's actual position
-        self.cmd_pos[n] = self.get_pos(n) or 0.0
-        print(f"  M{n} enabled (holding current position)")
+        while not self._estopped and not self._stop:
+            with self._lock:
+                state = self.drive_state.get(n)
+                if state is None or (state[0] and state[2] > began):
+                    self.enabled.add(n)
+                    break
+            if time.monotonic() - began >= 2.5:
+                print(f"  M{n}: enable unconfirmed (last stop: {state[1]}).")
+                return False
+            time.sleep(0.05)
+        else:
+            return False
+        # The firmware seeds its hold position during enable.
+        pos = self.get_pos(n)
+        if pos is None:
+            self.cmd_pos.pop(n, None)
+        else:
+            self.cmd_pos[n] = pos
+        print(f"  M{n} enable " + ("confirmed" if state else "requested"))
+        return True
 
     def passive(self, n):
         # Zero feedforwards before releasing — a live torque/velocity command

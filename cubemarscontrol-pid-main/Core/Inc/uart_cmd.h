@@ -39,10 +39,13 @@ typedef struct {
 
 extern volatile uint8_t uart_cmd_diag_requested;
 void         uart_cmd_init(void);
+extern volatile uint32_t uart_rx_faults, uart_queue_faults;
+extern uint32_t uart_lines_processed;
+void         uart_cmd_process(void);
+void         uart_cmd_rx_error(void);
 void         uart_cmd_feed(uint8_t byte);
 MotorState  *uart_cmd_motor(uint8_t idx);
-uint8_t      uart_cmd_e_stop_requested(void);
-void         uart_cmd_clear_e_stop(void);
+uint8_t      uart_cmd_take_stop(void);
 uint32_t     uart_cmd_last_activity(void);
 float        uart_cmd_pos_rate_limit(void);
 

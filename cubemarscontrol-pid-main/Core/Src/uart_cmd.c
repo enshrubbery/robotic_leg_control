@@ -6,14 +6,28 @@
 #define CMD_BUF_SIZE 32
 
 static MotorState motors[NUM_MOTORS];
-static char buf[CMD_BUF_SIZE];
+// USART2 fills complete lines. Only the control loop parses numbers and
+// changes setpoints, so a CAN send cannot overwrite a newly arrived target.
+#define QUEUE_SIZE 32U
+static char lines[QUEUE_SIZE][CMD_BUF_SIZE];
+static volatile unsigned head, tail;
+volatile uint32_t uart_rx_faults, uart_queue_faults;
+uint32_t uart_lines_processed;
 static uint8_t idx = 0;
+static uint8_t discard_line;
 static volatile uint8_t e_stop_pending = 0;
 static volatile uint32_t last_activity_tick = 0;
-static float pos_rate_limit = 0.3f;   // rad/s — set via GUI with "0L<value>"
+static float pos_rate_limit = 0.3f;   // rad/s â€” set via GUI with "0L<value>"
 
-uint8_t  uart_cmd_e_stop_requested(void) { return e_stop_pending; }
-void     uart_cmd_clear_e_stop(void)     { e_stop_pending = 0; }
+uint8_t uart_cmd_take_stop(void)
+{
+    uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+    uint8_t reason = e_stop_pending;
+    e_stop_pending = 0;
+    __set_PRIMASK(mask);
+    return reason;
+}
 uint32_t uart_cmd_last_activity(void)    { return last_activity_tick; }
 float    uart_cmd_pos_rate_limit(void)   { return pos_rate_limit; }
 
@@ -154,18 +168,14 @@ MotorState *uart_cmd_motor(uint8_t motor_idx)
 
 volatile uint8_t uart_cmd_diag_requested;
 
-static void parse_cmd(void)
+static void parse_cmd(const char *buf)
 {
-    if (idx < 2) return;
-    buf[idx] = '\0';
 
     // Global commands: "0X" emergency stop, "0H" host heartbeat.
     if (buf[0] == '0') {
         if (buf[1] == 'Q') uart_cmd_diag_requested = 1;
-        if (buf[1] == 'X' || buf[1] == 'x')
-            e_stop_pending = 1;
         if (buf[1] == 'L' || buf[1] == 'l') {
-            float v = (idx > 2) ? (float)atof(&buf[2]) : 0.0f;
+            float v = (buf[2] != 0) ? (float)atof(&buf[2]) : 0.0f;
             if (v > 0.0f && v <= 20.0f) pos_rate_limit = v;
         }
         if (buf[1] == 'X' || buf[1] == 'x' || buf[1] == 'H' || buf[1] == 'h')
@@ -175,7 +185,7 @@ static void parse_cmd(void)
 
     uint8_t motor_num = (uint8_t)(buf[0] - '1');
     char cmd = buf[1];
-    float val = (idx > 2) ? (float)atof(&buf[2]) : 0.0f;
+    float val = (buf[2] != 0) ? (float)atof(&buf[2]) : 0.0f;
 
     if (motor_num >= NUM_MOTORS) return;
 
@@ -226,13 +236,70 @@ static void parse_cmd(void)
     }
 }
 
+static void discard_commands(void)
+{
+    idx = 0;
+    tail = head;
+    e_stop_pending = 2;
+}
+
+void uart_cmd_rx_error(void)
+{
+    ++uart_rx_faults;
+    discard_commands();
+    discard_line = 1;
+}
+
 void uart_cmd_feed(uint8_t byte)
 {
-    if (byte == '\n' || byte == '\r') {
-        parse_cmd();
-        idx = 0;
-    } else {
-        if (idx < CMD_BUF_SIZE - 1)
-            buf[idx++] = (char)byte;
+    if (discard_line) {
+        if (byte == '\n' || byte == '\r') discard_line = 0;
+        return;
+    }
+    char *line = lines[head];
+    if (byte != '\n' && byte != '\r') {
+        if (idx < CMD_BUF_SIZE - 1) {
+            line[idx++] = (char)byte;
+        } else {
+            ++uart_queue_faults;
+            discard_commands();
+            discard_line = 1;
+        }
+        return;
+    }
+    if (idx >= 2) {
+        line[idx] = 0;
+        if (line[0] == '0' && (line[1] == 'X' || line[1] == 'x')) {
+            tail = head;
+            if (!e_stop_pending) e_stop_pending = 1;
+        } else if (!e_stop_pending) {
+            unsigned next = (head + 1U) % QUEUE_SIZE;
+            if (next == tail) {
+                ++uart_queue_faults;
+                discard_commands();
+            } else {
+                head = next;
+            }
+        }
+    }
+    idx = 0;
+}
+
+void uart_cmd_process(void)
+{
+    char line[CMD_BUF_SIZE];
+    for (unsigned count = 0; count < QUEUE_SIZE; ++count) {
+        // An RX fault or emergency stop can invalidate the queue at any byte.
+        uint32_t mask = __get_PRIMASK();
+        __disable_irq();
+        if (tail == head || e_stop_pending) {
+            __set_PRIMASK(mask);
+            return;
+        }
+        memcpy(line, lines[tail], sizeof(line));
+        tail = (tail + 1U) % QUEUE_SIZE;
+        __set_PRIMASK(mask);
+        parse_cmd(line);
+        ++uart_lines_processed;
     }
 }

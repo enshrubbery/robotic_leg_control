@@ -56,6 +56,8 @@ void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
 /* USER CODE BEGIN EFP */
+void cmd_dma_start(void);
+void cmd_dma_poll(void);
 
 /* USER CODE END EFP */
 

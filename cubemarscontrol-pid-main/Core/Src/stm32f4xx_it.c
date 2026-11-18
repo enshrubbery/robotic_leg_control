@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f4xx_it.h"
+#include "uart_cmd.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -203,9 +204,60 @@ void CAN1_RX0_IRQHandler(void)
     HAL_CAN_IRQHandler(&hcan1);
 }
 
+// RM0390 table 28: USART2_RX is DMA1 stream 5, channel 4.
+#define RX_BYTES 512U
+static volatile uint8_t rx_bytes[RX_BYTES];
+static unsigned consumed;
+
+void cmd_dma_start(void)
+{
+    __HAL_RCC_DMA1_CLK_ENABLE();
+    DMA1_Stream5->PAR = (uint32_t)&USART2->DR;
+    DMA1_Stream5->M0AR = (uint32_t)rx_bytes;
+    DMA1_Stream5->NDTR = RX_BYTES;
+    DMA1->HIFCR = DMA_HIFCR_CTCIF5 | DMA_HIFCR_CHTIF5 | DMA_HIFCR_CTEIF5 |
+                  DMA_HIFCR_CDMEIF5 | DMA_HIFCR_CFEIF5;
+    DMA1_Stream5->CR = (4U << DMA_SxCR_CHSEL_Pos) | DMA_SxCR_MINC |
+        DMA_SxCR_CIRC | DMA_SxCR_HTIE | DMA_SxCR_TCIE | DMA_SxCR_TEIE |
+        DMA_SxCR_DMEIE | DMA_SxCR_EN;
+    HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+    USART2->CR3 |= USART_CR3_DMAR | USART_CR3_EIE;
+}
+
+void cmd_dma_poll(void)
+{
+    // Serialize the main-loop poll with the half/full-buffer interrupts.
+    uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+    unsigned end = (RX_BYTES - DMA1_Stream5->NDTR) % RX_BYTES;
+    while (consumed != end) {
+        uart_cmd_feed(rx_bytes[consumed]);
+        consumed = (consumed + 1U) % RX_BYTES;
+    }
+    __set_PRIMASK(mask);
+}
+
+void DMA1_Stream5_IRQHandler(void)
+{
+    uint32_t flags = DMA1->HISR;
+    DMA1->HIFCR = flags & (DMA_HIFCR_CTCIF5 | DMA_HIFCR_CHTIF5 |
+        DMA_HIFCR_CTEIF5 | DMA_HIFCR_CDMEIF5 | DMA_HIFCR_CFEIF5);
+    if (flags & (DMA_HISR_TEIF5 | DMA_HISR_DMEIF5)) {
+        consumed = (RX_BYTES - DMA1_Stream5->NDTR) % RX_BYTES;
+        uart_cmd_rx_error();
+    } else {
+        cmd_dma_poll();
+    }
+}
+
 void USART2_IRQHandler(void)
 {
-    HAL_UART_IRQHandler(&huart2);
+    if (USART2->SR & (USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE)) {
+        (void)USART2->DR;
+        consumed = (RX_BYTES - DMA1_Stream5->NDTR) % RX_BYTES;
+        uart_cmd_rx_error();
+    }
 }
 /* USER CODE BEGIN 1 */
 

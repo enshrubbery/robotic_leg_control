@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Robot leg UART remote control (6 motors) — PID version
+  * @brief          : Robot leg UART remote control (6 motors) â€” PID version
   *
   * Controls up to 6 CubeMars motors (AK60, AK70/80, or AK40) via CAN bus.
   *   M1 Hip Pitch AK70-10 (CAN 1), M2 Hip Roll AK80-64 (CAN 2),
@@ -30,6 +30,7 @@
 /* USER CODE END Header */
 
 #include "main.h"
+#include "stm32f4xx_it.h"
 #include "uart_cmd.h"
 #include <math.h>
 #include <string.h>
@@ -75,7 +76,7 @@ UART_HandleTypeDef huart2;
 
 // Commanded-position acceleration limit and host safety timeout.
 // POS_RATE_LIMIT is now a runtime variable set via the GUI ("0L<value>").
-#define POS_ACCEL_LIMIT      0.5f   // rad/s²  — accel and decel rate
+#define POS_ACCEL_LIMIT      0.5f   // rad/sÂ²  â€” accel and decel rate
 #define CONTROL_DT_MIN       0.001f
 #define CONTROL_DT_MAX       0.100f
 #define HOST_TIMEOUT_MS      1000U
@@ -92,14 +93,13 @@ static uint32_t bus_mailbox_timeouts;
 static volatile uint32_t m3_received;
 static uint8_t m3_mailboxes;  // Main loop owns TX mailboxes and completion flags.
 
-uint8_t uart_rx_byte;
 
 // Trapezoidal-profile state for each motor
 static float cmd_pos[NUM_MOTORS] = {0};
 static float v_ramp_cur[NUM_MOTORS] = {0};  // current ramp velocity (rad/s, signed)
 static uint32_t control_tick[NUM_MOTORS] = {0};
 
-// Feedback ring buffer — ISR writes, main loop transmits
+// Feedback ring buffer â€” ISR writes, main loop transmits
 #define FB_BUF_SIZE 512
 static char fb_buf[FB_BUF_SIZE];
 static volatile uint16_t fb_head = 0;
@@ -130,7 +130,6 @@ static void         send_can_frame(MotorState *m);
 static void         send_ak60_cmd(MotorState *m);
 static void         send_ak70_cmd(MotorState *m);
 static void         send_ak40_cmd(MotorState *m);
-static void         send_ak60_enable(MotorState *m);
 static void         send_ak70_enable(MotorState *m);
 static void         send_ak70_disable(MotorState *m);
 static void         send_ak60_set_origin(MotorState *m);
@@ -301,23 +300,8 @@ static void send_ak70_enable(MotorState *m)
     send_can_frame(m);
 }
 
-// AK60 enter MIT motor mode: same magic bytes as AK70 but on extended CAN frame
-static void send_ak60_enable(MotorState *m)
-{
-    memset(txData, 0xFF, sizeof(txData));
-    txData[7] = 0xFC;
-
-    txHeader.StdId              = 0;
-    txHeader.ExtId              = (uint32_t)m->can_id | ((uint32_t)CAN_PACKET_MIT << 8);
-    txHeader.IDE                = CAN_ID_EXT;
-    txHeader.RTR                = CAN_RTR_DATA;
-    txHeader.DLC                = 8;
-    txHeader.TransmitGlobalTime = DISABLE;
-    send_can_frame(m);
-}
-
 // Send a zero-gain MIT frame to any motor type.
-// kp=0, kd=0, vel=0, tff=0 → zero commanded torque → motor is truly limp.
+// kp=0, kd=0, vel=0, tff=0 â†’ zero commanded torque â†’ motor is truly limp.
 // We stay in MIT mode intentionally: sending the exit-MIT command (0xFD)
 // causes the motor's own internal firmware to activate its position-hold
 // controller, which is exactly the "snaps back" symptom we want to avoid.
@@ -337,7 +321,7 @@ static void send_zero_gain_cmd(MotorState *m)
 }
 
 // AK60 set origin: servo mode, extended frame, CAN_PACKET_SET_ORIGIN_HERE (id=5)
-// Data[0]=0 → temporary (cleared on power loss); Data[0]=1 → permanent
+// Data[0]=0 â†’ temporary (cleared on power loss); Data[0]=1 â†’ permanent
 static void send_ak60_set_origin(MotorState *m)
 {
     txData[0] = 0x02;
@@ -372,7 +356,18 @@ static void send_ak70_set_origin(MotorState *m)
     send_can_frame(m);
 }
 
+// Limit host telemetry independently of the feedback used for control.
+static int telemetry_due(uint8_t index, uint32_t tick)
+{
+    static uint32_t last[NUM_MOTORS];
+    if (last[index] && tick - last[index] < 100U) return 0;
+    last[index] = tick;
+    return 1;
+}
+
 // AK60 feedback: servo-mode format (writes to ring buffer, not UART directly)
+static const char *stop_reason[NUM_MOTORS] = {"none","none","none","none","none","none"};
+
 static void unpack_ak60_reply(uint8_t motor_idx)
 {
     int16_t pos_int = (int16_t)((rxData[0] << 8) | rxData[1]);
@@ -389,12 +384,13 @@ static void unpack_ak60_reply(uint8_t motor_idx)
     m->fb_pos = pos * 0.01745329f - m->pos_offset;
     m->fb_tick = HAL_GetTick();
     m->fb_received = 1;
+    if (!telemetry_due(motor_idx, m->fb_tick)) return;
 
     char buf[96];
     int len = snprintf(buf, sizeof(buf),
-        "[M%d] pos=%.1f deg  spd=%.0f eRPM  I=%.2f A  T=%d  err=%d\r\n",
-        motor_idx + 1, (double)(m->fb_pos / 0.01745329f), (double)spd, (double)cur, temp, err);
-    fb_write(buf, len);
+        "[M%d] pos=%.1f deg  spd=%.0f eRPM  I=%.2f A  T=%d  err=%d en=%u stop=%s\r\n",
+        motor_idx + 1, (double)(m->fb_pos / 0.01745329f), (double)spd, (double)cur, temp, err, (unsigned)m->enabled, stop_reason[motor_idx]);
+    fb_write(buf, len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1);
 }
 
 // AK70/80 feedback: MIT mode format (writes to ring buffer)
@@ -414,12 +410,13 @@ static void unpack_ak70_reply(uint8_t motor_idx)
     m->fb_pos = pos;
     m->fb_tick = HAL_GetTick();
     m->fb_received = 1;
+    if (!telemetry_due(motor_idx, m->fb_tick)) return;
 
     char buf[96];
     int len = snprintf(buf, sizeof(buf),
-        "[M%d] pos=%.3f rad  vel=%.2f  tau=%.2f  T=%d  err=%d\r\n",
-        motor_idx + 1, (double)pos, (double)vel, (double)tau, temp, err);
-    fb_write(buf, len);
+        "[M%d] pos=%.3f rad  vel=%.2f  tau=%.2f  T=%d  err=%d en=%u stop=%s\r\n",
+        motor_idx + 1, (double)pos, (double)vel, (double)tau, temp, err, (unsigned)m->enabled, stop_reason[motor_idx]);
+    fb_write(buf, len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1);
 }
 
 // AK40 feedback: same format as AK70 but different limits
@@ -439,12 +436,13 @@ static void unpack_ak40_reply(uint8_t motor_idx)
     m->fb_pos = pos;
     m->fb_tick = HAL_GetTick();
     m->fb_received = 1;
+    if (!telemetry_due(motor_idx, m->fb_tick)) return;
 
     char buf[96];
     int len = snprintf(buf, sizeof(buf),
-        "[M%d] pos=%.3f rad  vel=%.2f  tau=%.2f  T=%d  err=%d\r\n",
-        motor_idx + 1, (double)pos, (double)vel, (double)tau, temp, err);
-    fb_write(buf, len);
+        "[M%d] pos=%.3f rad  vel=%.2f  tau=%.2f  T=%d  err=%d en=%u stop=%s\r\n",
+        motor_idx + 1, (double)pos, (double)vel, (double)tau, temp, err, (unsigned)m->enabled, stop_reason[motor_idx]);
+    fb_write(buf, len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1);
 }
 
 // Identify which motor sent feedback based on CAN ID
@@ -477,20 +475,12 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
         }
     }
 
-    // No match — buffer debug line
+    // No match â€” buffer debug line
     char dbg[64];
     int len = snprintf(dbg, sizeof(dbg), "[M0] unknown CAN id=%d ide=%lu\r\n",
         (int)rx_id, (unsigned long)rxHeader.IDE);
     fb_write(dbg, len);
     HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
-}
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART2) {
-        uart_cmd_feed(uart_rx_byte);
-        HAL_UART_Receive_IT(&huart2, &uart_rx_byte, 1);
-    }
 }
 
 // Clear every latched command and request protocol-specific limp mode.
@@ -507,10 +497,107 @@ static void request_motor_disable(MotorState *m)
     m->tff = 0.0f;
 }
 
-static void request_all_disabled(void)
+static void request_all_disabled(const char *reason)
 {
-    for (uint8_t i = 0; i < NUM_MOTORS; i++)
-        request_motor_disable(uart_cmd_motor(i));
+    for (uint8_t i = 0; i < NUM_MOTORS; i++) {
+        MotorState *m = uart_cmd_motor(i);
+        if (m->enabled || m->enable_pending) stop_reason[i] = reason;
+        request_motor_disable(m);
+    }
+}
+
+// Advance one motor's soft-start while the main loop services the others.
+typedef enum { START_ENTRY, START_WAIT, START_PROBE, START_RAMP } StartPhase;
+typedef struct {
+    StartPhase phase;
+    uint8_t entries;
+    uint32_t last_send, phase_start;
+    float hold_pos;
+} SoftStart;
+static SoftStart starts[NUM_MOTORS];
+
+static void advance_soft_start(uint8_t i, MotorState *m)
+{
+    SoftStart *start = &starts[i];
+    uint32_t now = HAL_GetTick();
+    if (start->phase == START_ENTRY && !start->entries) stop_reason[i] = "none";
+    switch (start->phase) {
+    case START_ENTRY:
+        if (start->entries && now - start->last_send < 10U) return;
+        if (m->type == MOTOR_TYPE_AK60) {
+            // V3 extended mode 8 always carries numeric control fields.
+            // Start with a neutral frame, then wait for a new position.
+            m->vel = 0.0f;
+            m->tff = 0.0f;
+            m->fb_received = 0;
+            start->phase_start = start->last_send = now;
+            start->phase = START_PROBE;
+            send_zero_gain_cmd(m);
+            return;
+        }
+        send_ak70_enable(m);
+        start->last_send = now;
+        if (++start->entries == 10) start->phase = START_WAIT;
+        return;
+    case START_WAIT:
+        if (now - start->last_send < 110U) return;
+        m->fb_received = 0;
+        start->phase_start = now;
+        start->phase = START_PROBE;
+        send_zero_gain_cmd(m);
+        start->last_send = now;
+        return;
+    case START_PROBE:
+        if (!m->fb_received) {
+            if (now - start->phase_start >= 300U) {
+                stop_reason[i] = "probe_timeout";
+                request_motor_disable(m);
+            }
+            else if (now - start->last_send >= 10U) {
+                send_zero_gain_cmd(m);
+                start->last_send = now;
+            }
+            return;
+        }
+        start->phase = START_RAMP;
+        start->phase_start = now;
+        start->hold_pos = m->fb_pos;
+        m->tff = 0.0f;
+        break;
+    case START_RAMP:
+        if (now - start->last_send < 20U) return;
+        break;
+    }
+
+    uint32_t fb_tick = m->fb_tick;
+    if ((uint32_t)(HAL_GetTick() - fb_tick) > FEEDBACK_FRESH_MS) {
+        stop_reason[i] = "ramp_feedback";
+        request_motor_disable(m);
+        return;
+    }
+    uint32_t elapsed = now - start->phase_start;
+    if (elapsed < 100U) start->hold_pos = m->fb_pos;
+    m->pos = cmd_pos[i] = start->hold_pos;
+    float kp = m->kp, kd = m->kd;
+    float scale = elapsed >= 1000U ? 1.0f : (float)elapsed / 1000.0f;
+    m->kp = kp * scale;
+    m->kd = kd * scale;
+    if (m->type == MOTOR_TYPE_AK60) send_ak60_cmd(m);
+    else if (m->type == MOTOR_TYPE_AK40) send_ak40_cmd(m);
+    else send_ak70_cmd(m);
+    m->kp = kp;
+    m->kd = kd;
+    start->last_send = now;
+    if (elapsed >= 1000U) {
+        m->pid_integral = 0.0f;
+        m->pid_prev_error = m->fb_pos;
+        m->pid_active = 0;
+        m->enable_pending = 0;
+        m->enabled = 1;
+        v_ramp_cur[i] = 0.0f;
+        control_tick[i] = now;
+        *start = (SoftStart){0};
+    }
 }
 
 /* USER CODE END 0 */
@@ -533,7 +620,7 @@ int main(void)
     uart_cmd_init();
     HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
-    HAL_UART_Receive_IT(&huart2, &uart_rx_byte, 1);
+    cmd_dma_start();
 
     HAL_Delay(100);
 
@@ -566,9 +653,11 @@ int main(void)
     while (1)
     {
         // UART-triggered emergency stop or lost-host watchdog: go limp.
-        if (uart_cmd_e_stop_requested()) {
-            request_all_disabled();
-            uart_cmd_clear_e_stop();
+        cmd_dma_poll();
+        uart_cmd_process();
+        uint8_t stop = uart_cmd_take_stop();
+        if (stop) {
+            request_all_disabled(stop == 2 ? "uart_rx" : "estop");
         }
 
         uint8_t any_enabled = 0;
@@ -579,9 +668,10 @@ int main(void)
                 break;
             }
         }
+        uint32_t last_host_tick = uart_cmd_last_activity();
         if (any_enabled
-            && (uint32_t)(HAL_GetTick() - uart_cmd_last_activity()) > HOST_TIMEOUT_MS) {
-            request_all_disabled();
+            && (uint32_t)(HAL_GetTick() - last_host_tick) > HOST_TIMEOUT_MS) {
+            request_all_disabled("host_timeout");
         }
 
         for (uint8_t i = 0; i < NUM_MOTORS; i++)
@@ -597,6 +687,7 @@ int main(void)
 
             // Process disable requests in the main loop, never in the UART ISR.
             if (m->disable_pending) {
+                starts[i] = (SoftStart){0};
                 request_motor_disable(m);
                 if (m->fb_received) {
                     m->pos = m->fb_pos;
@@ -628,82 +719,13 @@ int main(void)
                 m->set_origin_pending = 0;
             }
 
-            // Handle pending enable with soft-start
             if (m->enable_pending) {
-                // All motor types need MIT mode entry frame (AK60 uses extended CAN)
-                for (int j = 0; j < 10; j++) {
-                    if (m->type == MOTOR_TYPE_AK60)
-                        send_ak60_enable(m);
-                    else
-                        send_ak70_enable(m);
-                    HAL_Delay(10);
-                }
-                HAL_Delay(100);
-
-                m->fb_received = 0;
-                float kp_target = m->kp;
-                float kd_target = m->kd;
-
-                // Probe with zero gain for all motor types so the ramp
-                // starts at the actual position instead of 0.
-                m->kp  = 0.0f;
-                m->kd  = 0.0f;
-                m->tff = 0.0f;
-                uint32_t probe_start = HAL_GetTick();
-                while (!m->fb_received
-                       && (uint32_t)(HAL_GetTick() - probe_start) < 300U) {
-                    if (m->type == MOTOR_TYPE_AK60)
-                        send_ak60_cmd(m);
-                    else if (m->type == MOTOR_TYPE_AK40)
-                        send_ak40_cmd(m);
-                    else
-                        send_ak70_cmd(m);
-                    HAL_Delay(10);
-                }
-                if (!m->fb_received) {
-                    m->kp = kp_target;
-                    m->kd = kd_target;
-                    request_motor_disable(m);
-                    continue;
-                }
-
-                m->pos     = m->fb_pos;
-                cmd_pos[i] = m->fb_pos;
-                m->kp = kp_target;
-                m->kd = kd_target;
-
-                for (int j = 1; j <= 50; j++) {
-                    if (j <= 5) {
-                        m->pos     = m->fb_pos;
-                        cmd_pos[i] = m->fb_pos;
-                    }
-
-                    m->kp = kp_target * (float)j / 50.0f;
-                    m->kd = kd_target * (float)j / 50.0f;
-
-                    if (m->type == MOTOR_TYPE_AK60)
-                        send_ak60_cmd(m);
-                    else if (m->type == MOTOR_TYPE_AK40)
-                        send_ak40_cmd(m);
-                    else
-                        send_ak70_cmd(m);
-
-                    HAL_Delay(20);
-                }
-                m->kp = kp_target;
-                m->kd = kd_target;
-
-                m->pid_integral   = 0.0f;
-                m->pid_prev_error = m->fb_pos;
-                m->pid_active     = 0;
-                m->enable_pending = 0;
-                m->enabled = 1;
-                v_ramp_cur[i] = 0.0f;
-                control_tick[i] = HAL_GetTick();
+                advance_soft_start(i, m);
+                continue;
             }
 
             // Non-enabled motors: keep in MIT mode with zero gains.
-            // kp=0, kd=0, vel=0, tff=0 → zero commanded torque → truly limp.
+            // kp=0, kd=0, vel=0, tff=0 â†’ zero commanded torque â†’ truly limp.
             // Sending 0xFD (exit MIT) instead would cause the motor's internal
             // firmware to activate its own position-hold, producing the
             // "free-spins briefly then snaps back" symptom.
@@ -713,8 +735,10 @@ int main(void)
             }
 
             // Never apply control from stale feedback.
+            uint32_t last_feedback = m->fb_tick;
             if (!m->fb_received
-                || (uint32_t)(now - m->fb_tick) > FEEDBACK_FRESH_MS) {
+                || (uint32_t)(HAL_GetTick() - last_feedback) > FEEDBACK_FRESH_MS) {
+                stop_reason[i] = "jog_feedback";
                 request_motor_disable(m);
                 continue;
             }
@@ -728,7 +752,7 @@ int main(void)
             float v_ramp;
 
             if (fabsf(pos_err) < 0.0005f && fabsf(v_cur) < 0.01f) {
-                // Settled — snap cleanly to target and stop.
+                // Settled â€” snap cleanly to target and stop.
                 cmd_pos[i] = target;
                 v_ramp_cur[i] = 0.0f;
                 v_ramp = 0.0f;
@@ -820,17 +844,19 @@ int main(void)
         if (uart_cmd_diag_requested) {
             uart_cmd_diag_requested = 0;
             collect_m3_completions(hcan1.Instance->TSR);
-            char line[224];
+            char line[320];
             int len = snprintf(line, sizeof(line),
-                "\r\n[M3 diag] ms=%lu attempted=%lu completed=%lu received=%lu timeouts=%lu arb_lost=%lu tx_errors=%lu other=%lu bus_timeouts=%lu\r\n",
+                "\r\n[M3 diag] ms=%lu attempted=%lu completed=%lu received=%lu timeouts=%lu arb_lost=%lu tx_errors=%lu other=%lu bus_timeouts=%lu uart_errors=%lu queue_errors=%lu lines=%lu\r\n",
                 (unsigned long)HAL_GetTick(), (unsigned long)m3_attempted,
                 (unsigned long)m3_completed, (unsigned long)m3_received,
                 (unsigned long)m3_timeouts, (unsigned long)m3_arbitration_lost,
-                (unsigned long)m3_tx_errors, (unsigned long)m3_other, (unsigned long)bus_mailbox_timeouts);
-            HAL_UART_Transmit(&huart2, (uint8_t *)line, len, 20);
+                (unsigned long)m3_tx_errors, (unsigned long)m3_other, (unsigned long)bus_mailbox_timeouts,
+                (unsigned long)uart_rx_faults, (unsigned long)uart_queue_faults,
+                (unsigned long)uart_lines_processed);
+            HAL_UART_Transmit(&huart2, (uint8_t *)line, len, 40);
         }
         // Drain feedback buffer over UART (non-ISR context)
-        while (fb_tail != fb_head) {
+        for (unsigned sent = 0; sent < 96 && fb_tail != fb_head; ++sent) {
             uint8_t c = (uint8_t)fb_buf[fb_tail];
             HAL_UART_Transmit(&huart2, &c, 1, 2);
             fb_tail = (fb_tail + 1) % FB_BUF_SIZE;
