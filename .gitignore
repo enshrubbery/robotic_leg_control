@@ -19,3 +19,7 @@ log_*.txt
 
 # IDE
 .vscode/
+
+# Local MuJoCo run
+.venv/
+sim_trace.csv
