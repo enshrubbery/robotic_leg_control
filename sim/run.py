@@ -23,6 +23,11 @@ OUTER_KP = np.array([5, 5, 5, 25, 25, 25])
 OUTER_KI = np.array([0, 0, 0, 0.3, 0.3, 0.3])
 OUTER_KD = np.zeros(6)
 FIRMWARE_TORQUE_LIMIT = np.array([18, 18, 18, 12, 12, 12])
+TUNING_MOTORS = {f"m{index + 1}": index for index in range(len(CHANNELS))}
+SWEEP_REVERSE_S = 17.0
+M1_SWEEP_DURATION_S = 44.0
+M2_SWEEP_DURATION_S = 33.0
+M1_TUNED_PID = (20, 32, 0)
 
 
 def load_model(names):
@@ -53,6 +58,9 @@ class Controller:
         self.limits = limits
         self.outer_enabled = np.full(initial.shape, outer_enabled)
         self.anti_windup = anti_windup
+        self.kp = OUTER_KP.astype(float)
+        self.ki = OUTER_KI.copy()
+        self.kd = OUTER_KD.copy()
 
     def update(self, target, position, velocity, dt):
         remaining = target - self.command
@@ -76,10 +84,10 @@ class Controller:
         self.previous_position = position.copy()
         self.outer_enabled &= np.abs(error) <= 1.0
         inner = INNER_KP * error + INNER_KD * (self.velocity - velocity)
-        proportional_derivative = OUTER_KP * error - OUTER_KD * derivative
+        proportional_derivative = self.kp * error - self.kd * derivative
         # Store the integral contribution in Nm, including the firmware clamp.
         candidate = np.clip(
-            self.integral + OUTER_KI * error * dt, -self.limits, self.limits
+            self.integral + self.ki * error * dt, -self.limits, self.limits
         )
         if self.anti_windup:
             outer_request = proportional_derivative + candidate
@@ -104,6 +112,13 @@ def experiment(args):
     data = mujoco.MjData(model)
     motors = np.array([model.actuator(name).id for name in names])
     joints = model.actuator_trnid[motors, 0]
+    sweep = getattr(args, "full_rom", False)
+    positive_only = getattr(args, "positive_only", False)
+    tuning_motor = TUNING_MOTORS.get(args.motion)
+    roll_sweep = sweep and args.motion == "m2"
+    if sweep:
+        model.jnt_range[joints[tuning_motor]] = (-np.pi, np.pi)
+        print(f"{args.motion.upper()} simulation sweep uses a temporary joint range of -pi to +pi rad.")
     positions = model.jnt_qposadr[joints]
     velocities = model.jnt_dofadr[joints]
     ankles = [
@@ -121,13 +136,38 @@ def experiment(args):
     data.ctrl[other] = data.actuator_length[other]
     initial = data.qpos[positions].copy()
     controller = Controller(initial, limits, args.mode != "mit", args.mode == "anti-windup")
+    if roll_sweep and args.mode != "mit":
+        pitch = TUNING_MOTORS["m1"]
+        controller.kp[pitch], controller.ki[pitch], controller.kd[pitch] = M1_TUNED_PID
+    m2_hold = getattr(args, "m2_hold", None)
+    if m2_hold is not None:
+        roll = TUNING_MOTORS["m2"]
+        controller.kp[roll], controller.ki[roll], controller.kd[roll] = m2_hold
+        print(f"M2 outer hold gains: Kp={m2_hold[0]:g}, Ki={m2_hold[1]:g}, Kd={m2_hold[2]:g}")
     offset = np.zeros(6)
-    if args.motion == "joints":
+    if tuning_motor is not None:
+        offset[tuning_motor] = np.pi if sweep else args.amplitude
+        for gain in ("kp", "ki", "kd"):
+            value = getattr(args, gain)
+            if value is not None:
+                getattr(controller, gain)[tuning_motor] = value
+        if args.mode != "mit":
+            print(
+                f"{args.motion.upper()} outer gains: "
+                f"Kp={controller.kp[tuning_motor]:g}, "
+                f"Ki={controller.ki[tuning_motor]:g}, Kd={controller.kd[tuning_motor]:g}"
+            )
+    elif args.motion == "joints":
         offset[:4] = args.amplitude
     else:
         offset[4] = args.amplitude
         offset[5] = args.amplitude if args.motion == "ankle-pitch" else -args.amplitude
+        for gain in ("kp", "ki", "kd"):
+            value = getattr(args, gain)
+            if value is not None:
+                getattr(controller, gain)[4:6] = value
     goal = initial + offset
+    reverse_goal = initial if roll_sweep else initial - offset
     low, high = model.jnt_range[joints].T
     if np.any((goal < low) | (goal > high)):
         raise ValueError("Requested motion exceeds a simulated joint limit.")
@@ -153,6 +193,8 @@ def experiment(args):
             if viewer is not None and not viewer.is_running():
                 break
             target = initial if data.time < 1.0 else goal
+            if sweep and not positive_only and tick * dt >= SWEEP_REVERSE_S:
+                target = reverse_goal
             position = data.qpos[positions]
             velocity = data.qvel[velocities]
             if ankle_start is None and data.time >= 1.0:
@@ -191,16 +233,52 @@ def experiment(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--leg", choices=("left", "right"), default="left")
-    parser.add_argument("--motion", choices=("joints", "ankle-pitch", "ankle-roll"), default="joints")
+    parser.add_argument(
+        "--motion", choices=("joints", "ankle-pitch", "ankle-roll", *TUNING_MOTORS),
+        default="joints",
+    )
     parser.add_argument("--mode", choices=("firmware", "anti-windup", "mit"), default="firmware")
-    parser.add_argument("--amplitude", type=float, default=0.12, help="motor target change in rad")
-    parser.add_argument("--seconds", type=float, default=5.0)
+    parser.add_argument("--amplitude", type=float, help="motor target change in rad (default 0.12)")
+    parser.add_argument("--seconds", type=float, help="run duration (default 5 s for a single move)")
+    parser.add_argument(
+        "--full-rom", action="store_true",
+        help="sweep M1 from +pi to -pi or M2 from zero to +pi and back",
+    )
+    parser.add_argument("--positive-only", action="store_true", help="end the full-ROM sweep at +pi (default 17 s)")
+    parser.add_argument(
+        "--m2-hold", nargs=3, type=float, metavar=("KP", "KI", "KD"),
+        help="M2 outer hold gains during the M1 full-ROM sweep",
+    )
     parser.add_argument("--control-ms", type=int, choices=range(1, 101), default=5, metavar="1–100")
     parser.add_argument("--csv", type=Path, default=Path("sim_trace.csv"))
     parser.add_argument("--viewer", action="store_true")
+    for gain in ("kp", "ki", "kd"):
+        parser.add_argument(f"--{gain}", type=float, help="outer PID gain for a single motor or the ankle pair")
     args = parser.parse_args()
+    if args.full_rom and (args.motion not in ("m1", "m2") or args.amplitude is not None):
+        parser.error("--full-rom requires --motion m1 or m2 and sets its own amplitude.")
+    if args.positive_only and (not args.full_rom or args.motion != "m1"):
+        parser.error("--positive-only requires an M1 full-ROM sweep. M2 returns to zero.")
+    if args.m2_hold is not None:
+        if not args.full_rom or args.motion != "m1" or args.mode == "mit":
+            parser.error("--m2-hold requires an M1 full-ROM sweep and a PID controller mode.")
+        if any(not np.isfinite(gain) or gain < 0 for gain in args.m2_hold):
+            parser.error("M2 hold gains must be finite and nonnegative.")
+    if args.amplitude is None:
+        args.amplitude = 0.12
+    if args.seconds is None:
+        args.seconds = M1_SWEEP_DURATION_S if args.full_rom else 5.0
+        if args.positive_only:
+            args.seconds = SWEEP_REVERSE_S
+        elif args.full_rom and args.motion == "m2":
+            args.seconds = M2_SWEEP_DURATION_S
     if not np.isfinite(args.seconds) or args.seconds <= 1 or not np.isfinite(args.amplitude):
         parser.error("Duration must exceed one second and amplitude must be finite.")
+    overrides = [gain for gain in (args.kp, args.ki, args.kd) if gain is not None]
+    if overrides and (args.motion == "joints" or args.mode == "mit"):
+        parser.error("Outer gains require a single motor or ankle motion and a PID controller mode.")
+    if any(not np.isfinite(gain) or gain < 0 for gain in overrides):
+        parser.error("Outer gains must be finite and nonnegative.")
     try:
         experiment(args)
     except ValueError as error:

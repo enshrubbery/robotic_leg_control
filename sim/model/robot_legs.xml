@@ -48,6 +48,15 @@
     <body name="base_link" pos="0 0 0.9">
       <inertial pos="0 0 0.007707" mass="0.939613" fullinertia="0.0025344 0.0012997 0.0026278 1.3239e-08 -2.6009e-08 4.5109e-09"/>
       <geom name="Base_Link-1" mesh="Base_Link" material="part" pos="0.237758289 0.191755667 -0.180600408" quat="0.70710678 0.707106782 -1.82610172e-06 1.82609948e-06"/>
+      <!-- AK70-10 assemblies at the hip-pitch pivots, assuming base-mounted housings.
+           Inertia approximates a uniform cylinder (radius 44.5 mm, length 50.25 mm)
+           around the Y axis. This does not model reflected rotor inertia. -->
+      <body name="left_hip_pitch_motor" pos="0 0.12579362 0">
+        <inertial pos="0 0 0" mass="0.621" diaginertia="0.000438 0.000615 0.000438"/>
+      </body>
+      <body name="right_hip_pitch_motor" pos="0 -0.12579362 0">
+        <inertial pos="0 0 0" mass="0.621" diaginertia="0.000438 0.000615 0.000438"/>
+      </body>
       <body name="left_hip_pitch_link" pos="0 0.12579362 0">
         <joint name="left_hip_pitch_joint" type="hinge" axis="0 1 0" range="-1.57 1.57" damping="3"/>
         <inertial pos="0.011421 -0.002183 0.002399" mass="1.00144" fullinertia="0.0012728 0.00088037 0.00097913 -2.2429e-05 3.3873e-05 -8.2408e-06"/>
