@@ -21,8 +21,10 @@ the Qt main thread via a QTimer and only reads MotorLink's lock-protected state.
 Usage:
     pip install pyserial PyQt6
     ./motor_gui_qt.py
+    ./motor_gui_qt.py --pid
 """
 
+import argparse
 import math
 import queue
 import re
@@ -56,6 +58,16 @@ MOTORS = [
     (5, "FootDiff1", "CAN 5"),
     (6, "FootDiff2", "CAN 6"),
 ]
+
+# Outer gains from the MuJoCo tests, in Kp, Ki, Kd order.
+SIM_TUNED_PID = {
+    1: (20, 32, 0),
+    2: (75, 80, 0),
+    3: (75, 80, 0),
+    4: (55, 55, 0),
+    5: (60, 60, 0),
+    6: (60, 60, 0),
+}
 
 
 class EmittingStream(QObject):
@@ -257,9 +269,10 @@ class MotorPanel(QGroupBox):
 
 
 class MotorGUI(QWidget):
-    def __init__(self):
+    def __init__(self, sim_tuned_pid=False):
         super().__init__()
         self.setWindowTitle("CubeMars 6-Motor Control")
+        self.sim_tuned_pid = sim_tuned_pid
         self.link = None
         self.command_generation = 0
         self.worker = CommandWorker()
@@ -396,8 +409,18 @@ class MotorGUI(QWidget):
             return
         try:
             self.link = MotorLink(port)
+            if self.sim_tuned_pid:
+                commands = "".join(
+                    f"{motor}{command}{gain:g}\n"
+                    for motor, gains in SIM_TUNED_PID.items()
+                    for command, gain in zip("GJH", gains, strict=True)
+                )
+                self.link.send(commands)
+                print("  [gui] sent simulation-tuned outer PID gains for M1–M6")
         except Exception as e:
-            print(f"  [gui] could not open {port}: {e}")
+            print(f"  [gui] could not finish connecting to {port}: {e}")
+            if self.link is not None:
+                self.link.close()
             self.link = None
             return
         self.status_lbl.setText(f"Connected: {self.link.ser.port}")
@@ -571,8 +594,14 @@ class MotorGUI(QWidget):
 
 
 def main():
-    app = QApplication(sys.argv)
-    gui = MotorGUI()
+    parser = argparse.ArgumentParser(description="CubeMars 6-motor control")
+    parser.add_argument(
+        "--pid", "--sim-tuned-pid", dest="sim_tuned_pid", action="store_true",
+        help="send the six MuJoCo-tuned outer PID gain sets on connection",
+    )
+    args, qt_args = parser.parse_known_args()
+    app = QApplication([sys.argv[0], *qt_args])
+    gui = MotorGUI(sim_tuned_pid=args.sim_tuned_pid)
     gui.resize(900, 640)
     gui.show()
     sys.exit(app.exec())
