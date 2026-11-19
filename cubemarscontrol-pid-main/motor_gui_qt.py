@@ -35,7 +35,8 @@ import time
 from PyQt6.QtCore import Qt, QObject, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QGroupBox,
+    QApplication, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+    QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QLayout, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
 )
@@ -173,10 +174,12 @@ class MotorPanel(QGroupBox):
         self.en_btn = QPushButton("Enable")
         self.pa_btn = QPushButton("Passive")
         self.ze_btn = QPushButton("Zero")
+        self.limits_btn = QPushButton("Limits…")
         self.en_btn.clicked.connect(lambda: self.gui.run(lambda: self.gui.link.enable(self.idx)))
         self.pa_btn.clicked.connect(lambda: self.gui.run(lambda: self.gui.link.passive(self.idx)))
         self.ze_btn.clicked.connect(lambda: self.gui.run(lambda: self.gui.link.origin(self.idx)))
-        for b in (self.en_btn, self.pa_btn, self.ze_btn):
+        self.limits_btn.clicked.connect(self._edit_limits)
+        for b in (self.en_btn, self.pa_btn, self.ze_btn, self.limits_btn):
             btn_row.addWidget(b)
         root.addLayout(btn_row)
 
@@ -212,7 +215,7 @@ class MotorPanel(QGroupBox):
         root.addLayout(jog_row)
 
         self._controls = [
-            self.en_btn, self.pa_btn, self.ze_btn,
+            self.en_btn, self.pa_btn, self.ze_btn, self.limits_btn,
             self.jog_minus, self.jog_plus,
         ]
         self.set_connected(False)
@@ -238,6 +241,44 @@ class MotorPanel(QGroupBox):
     def _stop_jog(self):
         self._jog_timer.stop()
         self._jog_sign = 0
+
+    def _edit_limits(self):
+        link = self.gui.link
+        if link is None:
+            return
+        default_torque = 18.0 if self.idx <= 3 else 12.0
+        current = link.motor_limits.get(self.idx, (-12.5, 12.5, default_torque, default_torque))
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"M{self.idx} control limits")
+        form = QFormLayout(dialog)
+        note = QLabel("Position bounds use the current firmware zero. Changes can affect an enabled motor's target.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        fields = []
+        for label, low, high, value in zip(
+            ("Minimum target (rad)", "Maximum target (rad)", "Feedforward cap (N·m)",
+             "Integral torque cap (N·m)"),
+            (-12.5, -12.5, 0, 0), (12.5, 12.5, 18, 18), current, strict=True,
+        ):
+            field = self._spin(low, high, 0.1, value)
+            field.setDecimals(3)
+            fields.append(field)
+            form.addRow(label, field)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        minimum, maximum = fields[:2]
+        ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        minimum.valueChanged.connect(lambda: ok.setEnabled(minimum.value() < maximum.value()))
+        maximum.valueChanged.connect(lambda: ok.setEnabled(minimum.value() < maximum.value()))
+        form.addRow(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            limits = tuple(field.value() for field in fields)
+            self.gui.run(lambda: self._send_limits(link, limits))
+
+    def _send_limits(self, link, limits):
+        link.set_motor_limits(self.idx, *limits)
+        print(f"  [gui] sent M{self.idx} position and torque limits")
 
     def _jog(self, sign):
         dpos = sign * self.step.value()
@@ -318,6 +359,9 @@ class MotorGUI(QWidget):
         self.speed_spin.setDecimals(2)
         self.speed_spin.setValue(0.3)
         speed_row.addWidget(self.speed_spin)
+        speed_row.addWidget(QLabel("Accel (rad/s²):"))
+        self.accel_spin = MotorPanel._spin(0.01, 20.0, 0.1, 0.5)
+        speed_row.addWidget(self.accel_spin)
         self.speed_btn = QPushButton("Set")
         self.speed_btn.clicked.connect(self._set_speed)
         speed_row.addWidget(self.speed_btn)
@@ -454,6 +498,11 @@ class MotorGUI(QWidget):
         if start is None:
             self.motion_status.setText("Waiting for fresh M1 and M4 positions. Retry when both update.")
             return
+        for n, position in start.items():
+            end = position - math.pi / 2
+            if any(self.link.limit_position(n, p) != p for p in (position, end)):
+                self.motion_status.setText(f"M{n} paired path exceeds its configured position bounds.")
+                return
         now = time.monotonic()
         self.pair_move = (now, start)
         self.assist_updated = now
@@ -525,8 +574,9 @@ class MotorGUI(QWidget):
         if self.link is None:
             return
         v = self.speed_spin.value()
-        self.link.send(f"0L{v:.4f}\n")
-        print(f"  [gui] motion speed set to {v:.3f} rad/s")
+        a = self.accel_spin.value()
+        self.link.send(f"0L{v:.4f}\n0U{a:.4f}\n")
+        print(f"  [gui] sent motion speed {v:.3f} rad/s and acceleration {a:.3f} rad/s²")
 
     def estop(self):
         # Call directly (not via the worker queue) so it fires immediately even

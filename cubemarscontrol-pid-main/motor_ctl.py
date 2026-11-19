@@ -85,6 +85,7 @@ class MotorLink:
         self._fb_prev = {}     # motor -> previous wrapped feedback value (rad), for unwrapping
         self.enabled = set()   # motors we've enabled this session
         self.cmd_pos = {}      # motor -> software-tracked commanded setpoint (rad)
+        self.motor_limits = {} # settings sent during this connection
         self.print_fb = False
         self._scan_buf = None  # list when scan active, None otherwise
         self._lock = threading.Lock()
@@ -167,6 +168,24 @@ class MotorLink:
         with self._tx_lock:
             self.ser.write(s.encode())
             self.ser.flush()
+
+    def set_motor_limits(self, n, low, high, feedforward, integral):
+        limits = tuple(float(f"{value:.3f}") for value in (low, high, feedforward, integral))
+        low, high, feedforward, integral = limits
+        if not (1 <= n <= 6 and -12.5 <= low < high <= 12.5
+                and 0 <= feedforward <= 18 and 0 <= integral <= 18):
+            raise ValueError("Invalid position or torque limits.")
+        fields = " ".join(f"{value:.3f}" for value in limits)
+        self.send(f"{n}B{fields}\n")
+        self.motor_limits[n] = limits
+        if n in self.cmd_pos:
+            self.cmd_pos[n] = self.limit_position(n, self.cmd_pos[n])
+
+    def limit_position(self, n, position):
+        if n in self.motor_limits:
+            low, high, _, _ = self.motor_limits[n]
+            return max(low, min(high, position))
+        return position
 
     def close(self):
         if self._stop:
@@ -301,6 +320,7 @@ class MotorLink:
         if cur is None:
             print(f"  M{n}: no feedback, cannot hold")
             return
+        cur = self.limit_position(n, cur)
         self.send(f"{n}V0\n{n}T0\n{n}P{cur:.4f}\n")
         # resync the jog setpoint to where we just told it to hold
         self.cmd_pos[n] = cur
@@ -329,6 +349,7 @@ class MotorLink:
                 clamped_target = max(fb - MAX_FOLLOW_ERR, min(fb + MAX_FOLLOW_ERR, target))
                 clamped = clamped_target != target
                 target = clamped_target
+            target = self.limit_position(n, target)
             self.cmd_pos[n] = target
             v = vel if vel is not None else 0.0
             t = torque if torque is not None else 0.0

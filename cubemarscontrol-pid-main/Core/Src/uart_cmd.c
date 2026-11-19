@@ -1,5 +1,7 @@
 #include "uart_cmd.h"
 #include "stm32f4xx_hal.h"
+#include <float.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -18,6 +20,7 @@ static uint8_t discard_line;
 static volatile uint8_t e_stop_pending = 0;
 static volatile uint32_t last_activity_tick = 0;
 static float pos_rate_limit = 0.3f;   // rad/s â€” set via GUI with "0L<value>"
+static float pos_accel_limit = 0.5f;  // rad/s², set with "0U<value>"
 
 uint8_t uart_cmd_take_stop(void)
 {
@@ -30,10 +33,17 @@ uint8_t uart_cmd_take_stop(void)
 }
 uint32_t uart_cmd_last_activity(void)    { return last_activity_tick; }
 float    uart_cmd_pos_rate_limit(void)   { return pos_rate_limit; }
+float    uart_cmd_pos_accel_limit(void)  { return pos_accel_limit; }
 
 void uart_cmd_init(void)
 {
     memset(motors, 0, sizeof(motors));
+    for (unsigned i = 0; i < NUM_MOTORS; ++i) {
+        motors[i].pid_i_torque_limit = FLT_MAX;
+        motors[i].tff_limit = FLT_MAX;
+        motors[i].pos_min = -FLT_MAX;
+        motors[i].pos_max = FLT_MAX;
+    }
     last_activity_tick = HAL_GetTick();
 
     // M1: Hip Pitch, AK70-10, CAN ID 1 (needs enable)
@@ -168,6 +178,20 @@ MotorState *uart_cmd_motor(uint8_t motor_idx)
 
 volatile uint8_t uart_cmd_diag_requested;
 
+// Parse the entire new-style command before applying any setting.
+static int parse_values(const char *text, float *values, unsigned count)
+{
+    for (unsigned i = 0; i < count; ++i) {
+        char *end;
+        values[i] = strtof(text, &end);
+        if (end == text || !isfinite(values[i]) || (*end != ' ' && *end != '\0'))
+            return 0;
+        text = end;
+    }
+    while (*text == ' ') ++text;
+    return *text == '\0';
+}
+
 static void parse_cmd(const char *buf)
 {
 
@@ -177,6 +201,11 @@ static void parse_cmd(const char *buf)
         if (buf[1] == 'L' || buf[1] == 'l') {
             float v = (buf[2] != 0) ? (float)atof(&buf[2]) : 0.0f;
             if (v > 0.0f && v <= 20.0f) pos_rate_limit = v;
+        }
+        if (buf[1] == 'U' || buf[1] == 'u') {
+            float accel;
+            if (parse_values(&buf[2], &accel, 1) && accel >= 0.01f && accel <= 20.0f)
+                pos_accel_limit = accel;
         }
         if (buf[1] == 'X' || buf[1] == 'x' || buf[1] == 'H' || buf[1] == 'h')
             last_activity_tick = HAL_GetTick();
@@ -193,8 +222,24 @@ static void parse_cmd(const char *buf)
     last_activity_tick = HAL_GetTick();
 
     switch (cmd) {
+        case 'B': case 'b': {
+            float limits[4];
+            const float travel = m->type == MOTOR_TYPE_AK60 ? 12.56f : 12.5f;
+            if (!parse_values(&buf[2], limits, 4) ||
+                limits[0] < -travel || limits[1] > travel || limits[0] >= limits[1] ||
+                limits[2] < 0.0f || limits[2] > 18.0f ||
+                limits[3] < 0.0f || limits[3] > 18.0f)
+                break;
+            m->pos_min = limits[0];
+            m->pos_max = limits[1];
+            m->tff_limit = limits[2];
+            m->pid_i_torque_limit = limits[3];
+            m->pos = fminf(m->pos_max, fmaxf(m->pos_min, m->pos));
+            break;
+        }
         case 'P': case 'p':
-            m->pos = val;
+            if (!isfinite(val)) break;
+            m->pos = fminf(m->pos_max, fmaxf(m->pos_min, val));
             m->pid_integral = 0.0f;
             m->pid_prev_error = m->fb_pos;
             m->pid_active = m->fb_received

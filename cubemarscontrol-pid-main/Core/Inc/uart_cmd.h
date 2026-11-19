@@ -33,6 +33,10 @@ typedef struct {
     float pid_ki;
     float pid_integral;
     float pid_prev_error;
+    float pid_i_torque_limit;
+    float tff_limit;
+    float pos_min;
+    float pos_max;
     uint8_t pid_active;
     uint8_t fb_only;     // 1 = poll state via 0xFC, no torque (set via R command)
 } MotorState;
@@ -48,5 +52,6 @@ MotorState  *uart_cmd_motor(uint8_t idx);
 uint8_t      uart_cmd_take_stop(void);
 uint32_t     uart_cmd_last_activity(void);
 float        uart_cmd_pos_rate_limit(void);
+float        uart_cmd_pos_accel_limit(void);
 
 #endif

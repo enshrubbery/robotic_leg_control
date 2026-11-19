@@ -76,7 +76,6 @@ UART_HandleTypeDef huart2;
 
 // Commanded-position acceleration limit and host safety timeout.
 // POS_RATE_LIMIT is now a runtime variable set via the GUI ("0L<value>").
-#define POS_ACCEL_LIMIT      0.5f   // rad/sÂ²  â€” accel and decel rate
 #define CONTROL_DT_MIN       0.001f
 #define CONTROL_DT_MAX       0.100f
 #define HOST_TIMEOUT_MS      1000U
@@ -746,7 +745,8 @@ int main(void)
             // Trapezoidal velocity profile: accelerate to POS_RATE_LIMIT,
             // then decelerate so velocity reaches zero exactly at the target.
             // v_ramp is the signed velocity injected as feedforward each frame.
-            float target = m->pos;
+            float target = fminf(m->pos_max, fmaxf(m->pos_min, m->pos));
+            const float accel_limit = uart_cmd_pos_accel_limit();
             float pos_err = target - cmd_pos[i];
             float v_cur = v_ramp_cur[i];
             float v_ramp;
@@ -761,11 +761,11 @@ int main(void)
                 float dist = fabsf(pos_err);
                 float rate_limit = uart_cmd_pos_rate_limit();
                 // Maximum speed that still allows stopping at the target.
-                float v_brake = sqrtf(2.0f * POS_ACCEL_LIMIT * dist);
+                float v_brake = sqrtf(2.0f * accel_limit * dist);
                 float v_des = sign * (v_brake < rate_limit ? v_brake : rate_limit);
 
                 // Rate-limit the velocity change (symmetric accel/decel).
-                float dv_max = POS_ACCEL_LIMIT * dt;
+                float dv_max = accel_limit * dt;
                 float dv = v_des - v_cur;
                 if (dv >  dv_max) dv =  dv_max;
                 if (dv < -dv_max) dv = -dv_max;
@@ -791,6 +791,7 @@ int main(void)
                 t_max = AK40_T_MAX;
             else
                 t_max = AK70_T_MAX;
+            t_max = fminf(t_max, m->tff_limit);
 
             float tff_pid = 0.0f;
             if (m->pid_active) {
@@ -806,7 +807,8 @@ int main(void)
                     float dfb = (m->fb_pos - m->pid_prev_error) / dt;
                     m->pid_prev_error = m->fb_pos;
                     m->pid_integral += pid_error * dt;
-                    float i_max = (m->pid_ki > 0.001f) ? (t_max / m->pid_ki) : 0.0f;
+                    float i_torque_max = fminf(t_max, m->pid_i_torque_limit);
+                    float i_max = (m->pid_ki > 0.001f) ? (i_torque_max / m->pid_ki) : 0.0f;
                     if (m->pid_integral > i_max) m->pid_integral = i_max;
                     if (m->pid_integral < -i_max) m->pid_integral = -i_max;
                     tff_pid = m->pid_kp * pid_error
